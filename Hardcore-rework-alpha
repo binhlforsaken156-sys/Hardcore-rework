@@ -1,0 +1,402 @@
+-- === COMBINED LOADER (UPDATED: caption waits -> 3s) ===
+-- Nội dung: Noonies + Guiding Flash on Door 1 + Caption watcher (updated text & waits) + Show full-screen image on entering room 2 (3s) + Enforce player speed = 18
+-- Sprint Stamina: REMOVED
+
+local NOONIES_URL = "https://raw.githubusercontent.com/Kotyara19k-Doorsspawner/stuff/main/noonies_hardcore.lua.txt"
+local FLASH_URL   = "https://raw.githubusercontent.com/binhlforsaken156-sys/Guiding-flash-light/refs/heads/main/Guiding-flash-light.lua"
+
+local SANDBOX = false -- chỉ bật nếu môi trường hỗ trợ setfenv
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local player = LocalPlayer -- alias
+local RS = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+-- Utility: safe HTTP + load + pcall
+local function safeLoadString(name, url)
+    local ok, err = pcall(function()
+        local src = game:HttpGet(url, true)
+        if not src or src == "" then
+            error("Empty source from URL: " .. tostring(url))
+        end
+
+        local fn, loadErr = loadstring(src)
+        if not fn then
+            error("loadstring failed: " .. tostring(loadErr))
+        end
+
+        if SANDBOX and setfenv then
+            local env = {}
+            setmetatable(env, { __index = _G })
+            setfenv(fn, env)
+            local s, e = pcall(fn)
+            if not s then error(e) end
+        else
+            local s, e = pcall(fn)
+            if not s then error(e) end
+        end
+    end)
+    if not ok then
+        warn(("[%s] Load failed: %s"):format(tostring(name), tostring(err)))
+        return false, err
+    end
+    return true
+end
+
+-- === 1) Load Noonies (kept) ===
+safeLoadString("Noonies Hardcore", NOONIES_URL)
+
+-- === 2) Guiding Flash loader: only load when passing door 1 ===
+local loadedFlash = false
+local function loadFlashOnce()
+    if loadedFlash then return end
+    loadedFlash = true
+    safeLoadString("Guiding Flash", FLASH_URL)
+end
+
+local function tryGuiRoomWatcher()
+    local success, main_game = pcall(function()
+        local pg = player:WaitForChild("PlayerGui", 10)
+        if not pg then return nil end
+        local mainui = pg:FindFirstChild("MainUI") or pg:FindFirstChild("Main") or pg:FindFirstChild("InGameUI")
+        if not mainui then return nil end
+        local initiator = mainui:FindFirstChild("Initiator") or mainui
+        local mg = initiator:FindFirstChild("Main_Game") or mainui:FindFirstChild("Main_Game")
+        return mg
+    end)
+
+    if not success or not main_game then return false end
+
+    local roomVal = main_game:FindFirstChild("Room") or main_game:FindFirstChild("CurrentRoom") or main_game:FindFirstChild("RoomInt")
+    if roomVal and roomVal:IsA("IntValue") then
+        roomVal:GetPropertyChangedSignal("Value"):Connect(function()
+            if roomVal.Value == 1 then
+                loadFlashOnce()
+            end
+        end)
+        if roomVal.Value == 1 then loadFlashOnce() end
+        return true
+    end
+
+    for _, v in ipairs(main_game:GetDescendants()) do
+        if (v:IsA("TextLabel") or v:IsA("TextBox") or v:IsA("TextButton")) then
+            local txt = tostring(v.Text or "")
+            local num = tonumber(txt:match("%d+"))
+            if num then
+                v:GetPropertyChangedSignal("Text"):Connect(function()
+                    local n = tonumber(v.Text:match("%d+"))
+                    if n == 1 then loadFlashOnce() end
+                end)
+                if num == 1 then loadFlashOnce() end
+            end
+        end
+    end
+
+    return true
+end
+
+local function tryDoorPartWatcher()
+    local function connectPart(p)
+        if not p or not p:IsA("BasePart") then return false end
+        p.Touched:Connect(function(hit)
+            if not player or not player.Character then return end
+            local hrp = player.Character:FindFirstChild("HumanoidRootPart") or player.Character:FindFirstChild("Torso") or player.Character:FindFirstChild("UpperTorso")
+            if not hrp then return end
+            if hit == hrp or hit:IsDescendantOf(player.Character) then
+                loadFlashOnce()
+            end
+        end)
+        return true
+    end
+
+    local candidates = {
+        workspace:FindFirstChild("Door1"),
+        workspace:FindFirstChild("door1"),
+        workspace:FindFirstChild("Door_1"),
+        workspace:FindFirstChild("Door 1"),
+    }
+    for _, c in ipairs(candidates) do
+        if connectPart(c) then return true end
+    end
+
+    local mapRoot = workspace:FindFirstChild("Map") or workspace
+    for _, part in ipairs(mapRoot:GetDescendants()) do
+        if part:IsA("BasePart") then
+            local nm = tostring(part.Name):lower()
+            if nm:find("door") and (nm:find("1") or nm:find("_1") or nm:find(" 1")) then
+                connectPart(part)
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+local function fallbackCheckOnce()
+    pcall(function()
+        local pg = player:FindFirstChild("PlayerGui")
+        if not pg then return end
+        local mainui = pg:FindFirstChild("MainUI") or pg:FindFirstChild("Main")
+        local mg = nil
+        if mainui then
+            mg = (mainui:FindFirstChild("Initiator") and mainui.Initiator:FindFirstChild("Main_Game")) or mainui:FindFirstChild("Main_Game")
+        end
+        if mg then
+            local rv = mg:FindFirstChild("Room")
+            if rv and rv:IsA("IntValue") and rv.Value == 1 then
+                loadFlashOnce()
+                return
+            end
+            for _, v in ipairs(mg:GetDescendants()) do
+                if (v:IsA("TextLabel") or v:IsA("TextBox")) and tonumber(v.Text:match("%d+")) == 1 then
+                    loadFlashOnce()
+                    return
+                end
+            end
+        end
+    end)
+end
+
+pcall(function()
+    tryGuiRoomWatcher()
+    tryDoorPartWatcher()
+    fallbackCheckOnce()
+end)
+
+-- === 3) Caption watcher (updated initial text & waits = 3s) ===
+pcall(function()
+    local function getMainGameModule()
+        local pg = LocalPlayer:WaitForChild("PlayerGui", 10)
+        if not pg then return nil end
+        local mainui = pg:FindFirstChild("MainUI") or pg:FindFirstChild("Main") or pg:FindFirstChild("InGameUI")
+        if not mainui then return nil end
+        local initiator = mainui:FindFirstChild("Initiator") or mainui
+        local mg = initiator:FindFirstChild("Main_Game") or mainui:FindFirstChild("Main_Game")
+        if not mg then return nil end
+
+        if mg:IsA("ModuleScript") then
+            local ok, mod = pcall(require, mg)
+            if ok and type(mod) == "table" then
+                return mod
+            end
+        end
+
+        if type(mg) == "table" and type(mg.caption) == "function" then
+            return mg
+        end
+
+        for _, desc in ipairs(mainui:GetDescendants()) do
+            if desc:IsA("ModuleScript") and desc.Name:lower():find("main_game") then
+                local ok2, mod2 = pcall(require, desc)
+                if ok2 and type(mod2) == "table" and type(mod2.caption) == "function" then
+                    return mod2
+                end
+            end
+        end
+
+        return nil
+    end
+
+    local MainGame = getMainGameModule()
+
+    if MainGame and type(MainGame.caption) == "function" then
+        pcall(function()
+            MainGame.caption("script by chú bé tê liệt,realblueyt and LTDT_legacy", true)
+        end)
+        task.wait(3) -- <-- changed from 6 to 3
+
+        local cr = workspace:FindFirstChild("CurrentRooms") or workspace:FindFirstChild("Current_Rooms") or workspace:FindFirstChild("Rooms")
+        if cr and cr:IsA("Folder") then
+            cr.ChildAdded:Connect(function(room)
+                local roomNum = tonumber(room.Name)
+                if roomNum == 2 then
+                    task.wait(0.2)
+                    pcall(function()
+                        MainGame.caption("good luck! 🗿👍", true)
+                    end)
+                    task.wait(3) -- <-- changed from 6 to 3
+                end
+            end)
+        else
+            -- try WaitForChild fallback
+            local found = nil
+            pcall(function()
+                found = workspace:FindFirstChild("CurrentRooms") or workspace:FindFirstChild("Current_Rooms")
+                if not found then
+                    found = workspace:FindFirstChild("CurrentRooms") or workspace:FindFirstChild("Current_Rooms")
+                end
+            end)
+            if found and found:IsA("Folder") then
+                found.ChildAdded:Connect(function(room)
+                    local roomNum = tonumber(room.Name)
+                    if roomNum == 2 then
+                        task.wait(0.2)
+                        pcall(function()
+                            MainGame.caption("good luck! 🗿👍", true)
+                        end)
+                        task.wait(3) -- <-- changed from 6 to 3
+                    end
+                end)
+            else
+                warn("[CaptionWatcher] Không tìm thấy folder CurrentRooms để theo dõi room changes.")
+            end
+        end
+    else
+        warn("[CaptionWatcher] Không tìm thấy Main_Game module hoặc không có hàm caption() để gọi.")
+    end
+end)
+
+-- === 4) SHOW FULL-SCREEN IMAGE ON ENTERING ROOM 2 (Tween version, 3s display) ===
+do
+    task.spawn(function()
+        -- wait for RS.GameData.LatestRoom to exist
+        local ok = pcall(function() RS:WaitForChild("GameData", 10) end)
+        if not ok or not RS:FindFirstChild("GameData") then
+            warn("[RoomImage] ReplicatedStorage.GameData not found")
+            return
+        end
+        local GD = RS.GameData
+
+        local ok2 = pcall(function() GD:WaitForChild("LatestRoom", 10) end)
+        if not ok2 or not GD:FindFirstChild("LatestRoom") then
+            warn("[RoomImage] GameData.LatestRoom not found")
+            return
+        end
+        local LatestRoom = GD.LatestRoom
+
+        local IMAGE_ID = "rbxassetid://99169418814712"
+        local GUI_NAME = "FullScreenImage_OD_ROOM2"
+        local debounce = false
+
+        local function showFullScreenImage()
+            if debounce then return end
+            debounce = true
+            -- ensure PlayerGui ready
+            local success, pg = pcall(function() return LocalPlayer:WaitForChild("PlayerGui", 5) end)
+            if not success or not pg then
+                warn("[RoomImage] PlayerGui not ready")
+                debounce = false
+                return
+            end
+
+            -- remove old gui if exists
+            local existing = pg:FindFirstChild(GUI_NAME)
+            if existing then existing:Destroy() end
+
+            -- create gui and image
+            local gui = Instance.new("ScreenGui")
+            gui.Name = GUI_NAME
+            gui.ResetOnSpawn = false
+            gui.Parent = pg
+
+            local img = Instance.new("ImageLabel")
+            img.Parent = gui
+            img.Size = UDim2.new(1,0,1,0)
+            img.Position = UDim2.new(0,0,0,0)
+            img.BackgroundTransparency = 1
+            img.ImageTransparency = 1
+            img.Image = IMAGE_ID
+            img.ScaleType = Enum.ScaleType.Stretch
+
+            -- fade in via Tween (1s)
+            local fadeIn = TweenService:Create(img, TweenInfo.new(1), {ImageTransparency = 0})
+            fadeIn:Play()
+            fadeIn.Completed:Wait()
+
+            -- show duration (3s as requested)
+            task.wait(3)
+
+            -- fade out (1s)
+            local fadeOut = TweenService:Create(img, TweenInfo.new(1), {ImageTransparency = 1})
+            fadeOut:Play()
+            fadeOut.Completed:Wait()
+
+            if gui and gui.Parent then
+                gui:Destroy()
+            end
+
+            -- small cooldown to avoid immediate re-trigger
+            task.delay(1, function() debounce = false end)
+        end
+
+        local function resolveRoomNumber()
+            local success, val = pcall(function()
+                if LatestRoom.Value ~= nil then
+                    return LatestRoom.Value
+                end
+                return LatestRoom.Name
+            end)
+            if not success then return nil end
+            local rn = tonumber(val) or tonumber(tostring(val)) or nil
+            return rn
+        end
+
+        local function onRoomChanged()
+            local rn = resolveRoomNumber()
+            if rn == 2 then
+                -- spawn so we don't block the signal handler
+                task.spawn(function() pcall(showFullScreenImage) end)
+            end
+        end
+
+        -- connect change properly
+        if LatestRoom.GetPropertyChangedSignal then
+            LatestRoom:GetPropertyChangedSignal("Value"):Connect(onRoomChanged)
+        else
+            LatestRoom.Changed:Connect(onRoomChanged)
+        end
+
+        -- initial check
+        pcall(onRoomChanged)
+    end)
+end
+
+-- === 5) Enforce player walk speed = 18 (set on spawn + monitor changes) ===
+do
+    local TARGET_SPEED = 18
+
+    local function setSpeedForCharacter(char)
+        if not char then return end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hum then
+            hum = char:WaitForChild("Humanoid", 5)
+            if not hum then return end
+        end
+
+        pcall(function() hum.WalkSpeed = TARGET_SPEED end)
+
+        local conn
+        conn = hum:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+            if not hum or hum.Parent == nil then
+                if conn then conn:Disconnect() end
+                return
+            end
+            if hum.WalkSpeed ~= TARGET_SPEED then
+                pcall(function() hum.WalkSpeed = TARGET_SPEED end)
+            end
+        end)
+
+        hum.Died:Connect(function()
+            if conn then conn:Disconnect() end
+        end)
+    end
+
+    if player and player.Character then
+        setSpeedForCharacter(player.Character)
+    end
+
+    player.CharacterAdded:Connect(function(char)
+        task.wait(0.05)
+        setSpeedForCharacter(char)
+    end)
+end
+
+-- Optional: expose a function to force-load flash if needed
+local Loader = {}
+function Loader.ForceLoadFlash()
+    pcall(function() loadFlashOnce() end)
+end
+
+-- END OF FILE
