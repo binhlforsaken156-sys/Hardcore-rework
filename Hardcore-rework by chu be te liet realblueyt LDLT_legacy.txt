@@ -1,0 +1,609 @@
+-- === COMBINED LOADER: Noonies + Guiding Flash + Caption + Room2 Image + Cease + Ripper + Room51 Logo + PLAYER STATS ===
+-- Paste this into a LocalScript.
+
+-- CONFIG / URLs
+local NOONIES_URL = "https://raw.githubusercontent.com/Kotyara19k-Doorsspawner/stuff/main/noonies_hardcore.lua.txt"
+local FLASH_URL   = "https://raw.githubusercontent.com/binhlforsaken156-sys/Guiding-flash-light/refs/heads/main/Guiding-flash-light.lua"
+local CEASE_URL   = "https://raw.githubusercontent.com/binhlforsaken156-sys/Cease-entity-hardcore/refs/heads/main/Cease%20entity%20hardcore%20rework"
+local RIPPER_URL  = "https://raw.githubusercontent.com/rrealblueyt-oss/Ripperr/refs/heads/main/Ripperremake.lua"
+
+local SANDBOX = false -- only enable if your environment supports setfenv
+
+-- SERVICES & LOCALS
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local player = LocalPlayer
+local RS = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+math.randomseed(tick() + (os.time and os.time() or 0))
+
+-- =========================
+-- Utilities: fetch + exec + safe helper
+-- =========================
+local function safeFetchSource(name, url)
+    local ok, src = pcall(function() return game:HttpGet(url, true) end)
+    if not ok or not src or src == "" then
+        warn(("[%s] fetch failed or empty from %s"):format(tostring(name), tostring(url)))
+        return nil
+    end
+    return src
+end
+
+local function safeExecSource(name, src)
+    if not src or src == "" then
+        warn(("[%s] no source to exec"):format(tostring(name)))
+        return false
+    end
+    local ok, err = pcall(function()
+        local fn, loadErr = loadstring(src)
+        if not fn then error("loadstring failed: "..tostring(loadErr)) end
+        if SANDBOX and setfenv then
+            local env = {}
+            setmetatable(env, { __index = _G })
+            setfenv(fn, env)
+            local s,e = pcall(fn)
+            if not s then error(e) end
+        else
+            local s,e = pcall(fn)
+            if not s then error(e) end
+        end
+    end)
+    if not ok then
+        warn(("[%s] exec failed: %s"):format(tostring(name), tostring(err)))
+        return false
+    end
+    return true
+end
+
+-- tiny safe wrapper used by PLAYER STATS block and others
+local function safe(fn)
+    local ok, err = pcall(fn)
+    if not ok then
+        warn("[safe] error:", tostring(err))
+    end
+    return ok, err
+end
+
+-- =========================
+-- Loader helpers exposed
+-- =========================
+Loader = Loader or {}
+function Loader.ForceLoadFlash()
+    pcall(function() loadFlashOnce() end)
+end
+function Loader.ForceSpawnCease()
+    task.spawn(function()
+        if not CEASE_SRC then CEASE_SRC = safeFetchSource("Cease Entity", CEASE_URL) end
+        if CEASE_SRC then safeExecSource("Cease Entity", CEASE_SRC) end
+    end)
+end
+function Loader.ForceSpawnRipper()
+    task.spawn(function()
+        if not RIPPER_SRC then RIPPER_SRC = safeFetchSource("Ripper", RIPPER_URL) end
+        if RIPPER_SRC then safeExecSource("Ripper", RIPPER_SRC) end
+    end)
+end
+
+-- =========================
+-- 0) Preloads (background)
+-- =========================
+local CEASE_SRC = nil
+local RIPPER_SRC = nil
+
+task.spawn(function()
+    CEASE_SRC = safeFetchSource("Cease Entity", CEASE_URL)
+end)
+task.spawn(function()
+    RIPPER_SRC = safeFetchSource("Ripper", RIPPER_URL)
+end)
+
+-- =========================
+-- 1) Load Noonies immediately
+-- =========================
+task.spawn(function()
+    local src = safeFetchSource("Noonies Hardcore", NOONIES_URL)
+    if src then safeExecSource("Noonies Hardcore", src) end
+end)
+
+-- =========================
+-- 2) Guiding Flash: load when passing door 1
+-- =========================
+local loadedFlash = false
+function loadFlashOnce()
+    if loadedFlash then return end
+    loadedFlash = true
+    task.spawn(function()
+        local src = safeFetchSource("Guiding Flash", FLASH_URL)
+        if src then safeExecSource("Guiding Flash", src) end
+    end)
+end
+
+local function tryGuiRoomWatcher_forFlash()
+    local success, main_game = pcall(function()
+        local pg = player:WaitForChild("PlayerGui", 10)
+        if not pg then return nil end
+        local mainui = pg:FindFirstChild("MainUI") or pg:FindFirstChild("Main") or pg:FindFirstChild("InGameUI")
+        if not mainui then return nil end
+        local initiator = mainui:FindFirstChild("Initiator") or mainui
+        local mg = initiator:FindFirstChild("Main_Game") or mainui:FindFirstChild("Main_Game")
+        return mg
+    end)
+    if not success or not main_game then return false end
+
+    local roomVal = main_game:FindFirstChild("Room") or main_game:FindFirstChild("CurrentRoom") or main_game:FindFirstChild("RoomInt")
+    if roomVal and roomVal:IsA("IntValue") then
+        roomVal:GetPropertyChangedSignal("Value"):Connect(function()
+            if roomVal.Value == 1 then loadFlashOnce() end
+        end)
+        if roomVal.Value == 1 then loadFlashOnce() end
+        return true
+    end
+
+    for _, v in ipairs(main_game:GetDescendants()) do
+        if (v:IsA("TextLabel") or v:IsA("TextBox") or v:IsA("TextButton")) then
+            local txt = tostring(v.Text or "")
+            local num = tonumber(txt:match("%d+"))
+            if num then
+                v:GetPropertyChangedSignal("Text"):Connect(function()
+                    local n = tonumber(v.Text:match("%d+"))
+                    if n == 1 then loadFlashOnce() end
+                end)
+                if num == 1 then loadFlashOnce() end
+            end
+        end
+    end
+    return true
+end
+
+local function tryDoorPartWatcher_forFlash()
+    local function connectPart(p)
+        if not p or not p:IsA("BasePart") then return false end
+        p.Touched:Connect(function(hit)
+            if not player or not player.Character then return end
+            local hrp = player.Character:FindFirstChild("HumanoidRootPart") or player.Character:FindFirstChild("Torso") or player.Character:FindFirstChild("UpperTorso")
+            if not hrp then return end
+            if hit == hrp or hit:IsDescendantOf(player.Character) then loadFlashOnce() end
+        end)
+        return true
+    end
+
+    local candidates = {
+        workspace:FindFirstChild("Door1"),
+        workspace:FindFirstChild("door1"),
+        workspace:FindFirstChild("Door_1"),
+        workspace:FindFirstChild("Door 1"),
+    }
+    for _, c in ipairs(candidates) do
+        if connectPart(c) then return true end
+    end
+
+    local mapRoot = workspace:FindFirstChild("Map") or workspace
+    for _, part in ipairs(mapRoot:GetDescendants()) do
+        if part:IsA("BasePart") then
+            local nm = tostring(part.Name):lower()
+            if nm:find("door") and (nm:find("1") or nm:find("_1") or nm:find(" 1")) then
+                connectPart(part)
+                return true
+            end
+        end
+    end
+    return false
+end
+
+task.spawn(function()
+    pcall(function()
+        tryGuiRoomWatcher_forFlash()
+        tryDoorPartWatcher_forFlash()
+        -- fallback: if already in room 1
+        pcall(function()
+            local pg = player:FindFirstChild("PlayerGui")
+            if not pg then return end
+            local mainui = pg:FindFirstChild("MainUI") or pg:FindFirstChild("Main")
+            local mg = nil
+            if mainui then mg = (mainui:FindFirstChild("Initiator") and mainui.Initiator:FindFirstChild("Main_Game")) or mainui:FindFirstChild("Main_Game") end
+            if mg then
+                local rv = mg:FindFirstChild("Room")
+                if rv and rv:IsA("IntValue") and rv.Value == 1 then loadFlashOnce() end
+            end
+        end)
+    end)
+end)
+
+-- =========================
+-- 3) Caption watcher (initial caption text + room2 caption)
+-- =========================
+task.spawn(function()
+    local function getMainGameModule()
+        pcall(function() LocalPlayer:WaitForChild("PlayerGui", 10) end)
+        local pg = LocalPlayer:FindFirstChild("PlayerGui")
+        if not pg then return nil end
+        local mainui = pg:FindFirstChild("MainUI") or pg:FindFirstChild("Main") or pg:FindFirstChild("InGameUI")
+        if not mainui then return nil end
+        local initiator = mainui:FindFirstChild("Initiator") or mainui
+        local mg = initiator:FindFirstChild("Main_Game") or mainui:FindFirstChild("Main_Game")
+        if not mg then return nil end
+
+        if mg:IsA("ModuleScript") then
+            local ok2, mod = pcall(require, mg)
+            if ok2 and type(mod) == "table" then return mod end
+        end
+        if type(mg) == "table" and type(mg.caption) == "function" then return mg end
+
+        for _, desc in ipairs(mainui:GetDescendants()) do
+            if desc:IsA("ModuleScript") and desc.Name:lower():find("main_game") then
+                local ok3, mod3 = pcall(require, desc)
+                if ok3 and type(mod3) == "table" and type(mod3.caption) == "function" then return mod3 end
+            end
+        end
+        return nil
+    end
+
+    local MainGame = getMainGameModule()
+    if MainGame and type(MainGame.caption) == "function" then
+        pcall(function() MainGame.caption("script by chú bé tê liệt,realblueyt and LTDT_legacy", true) end)
+        task.wait(3)
+        -- watch CurrentRooms for room 2 caption
+        local cr = workspace:FindFirstChild("CurrentRooms") or workspace:FindFirstChild("Current_Rooms") or workspace:FindFirstChild("Rooms")
+        if cr and cr:IsA("Folder") then
+            cr.ChildAdded:Connect(function(room)
+                local roomNum = tonumber(room.Name)
+                if roomNum == 2 then
+                    task.wait(0.2)
+                    pcall(function() MainGame.caption("good luck! 🗿👍", true) end)
+                    task.wait(3)
+                end
+            end)
+        else
+            pcall(function()
+                local found = workspace:FindFirstChild("CurrentRooms") or workspace:FindFirstChild("Current_Rooms")
+                if not found then found = workspace:WaitForChild("CurrentRooms", 10) or workspace:WaitForChild("Current_Rooms", 10) end
+                if found and found:IsA("Folder") then
+                    found.ChildAdded:Connect(function(room)
+                        local roomNum = tonumber(room.Name)
+                        if roomNum == 2 then
+                            task.wait(0.2)
+                            pcall(function() MainGame.caption("good luck! 🗿👍", true) end)
+                            task.wait(3)
+                        end
+                    end)
+                end
+            end)
+        end
+    else
+        warn("[CaptionWatcher] Main_Game module or caption() not found.")
+    end
+end)
+
+-- =========================
+-- 4) SHOW FULL-SCREEN IMAGE ON ENTERING ROOM 2 (Tween unconflicting)
+-- =========================
+task.spawn(function()
+    if not pcall(function() RS:WaitForChild("GameData", 10) end) then
+        warn("[RoomImage] ReplicatedStorage.GameData not found")
+        return
+    end
+    local GD = RS.GameData
+    if not pcall(function() GD:WaitForChild("LatestRoom", 10) end) then
+        warn("[RoomImage] GameData.LatestRoom not found")
+        return
+    end
+    local LatestRoom = GD.LatestRoom
+
+    local IMAGE_ID = "rbxassetid://99169418814712"
+    local GUI_NAME = "FullScreenImage_OD_ROOM2"
+    local debounce = false
+
+    local function showFullScreenImage()
+        if debounce then return end
+        debounce = true
+        local ok, pg = pcall(function() return LocalPlayer:WaitForChild("PlayerGui", 5) end)
+        if not ok or not pg then
+            warn("[RoomImage] PlayerGui not ready")
+            debounce = false
+            return
+        end
+
+        local existing = pg:FindFirstChild(GUI_NAME)
+        if existing then existing:Destroy() end
+
+        local gui = Instance.new("ScreenGui")
+        gui.Name = GUI_NAME
+        gui.ResetOnSpawn = false
+        gui.Parent = pg
+
+        local img = Instance.new("ImageLabel")
+        img.Parent = gui
+        img.Size = UDim2.new(1,0,1,0)
+        img.Position = UDim2.new(0,0,0,0)
+        img.BackgroundTransparency = 1
+        img.ImageTransparency = 1
+        img.Image = IMAGE_ID
+        img.ScaleType = Enum.ScaleType.Stretch
+
+        local fadeIn = TweenService:Create(img, TweenInfo.new(1), {ImageTransparency = 0})
+        fadeIn:Play()
+        fadeIn.Completed:Wait()
+
+        task.wait(3) -- display duration
+
+        local fadeOut = TweenService:Create(img, TweenInfo.new(1), {ImageTransparency = 1})
+        fadeOut:Play()
+        fadeOut.Completed:Wait()
+
+        if gui and gui.Parent then gui:Destroy() end
+        task.delay(1, function() debounce = false end)
+    end
+
+    local function resolveRoomNumber()
+        local success, val = pcall(function()
+            if LatestRoom.Value ~= nil then return LatestRoom.Value end
+            return LatestRoom.Name
+        end)
+        if not success then return nil end
+        return tonumber(val) or tonumber(tostring(val)) or nil
+    end
+
+    local function onRoomChanged()
+        local rn = resolveRoomNumber()
+        if rn == 2 then
+            task.spawn(function() pcall(showFullScreenImage) end)
+        end
+    end
+
+    if LatestRoom.GetPropertyChangedSignal then
+        LatestRoom:GetPropertyChangedSignal("Value"):Connect(onRoomChanged)
+    else
+        LatestRoom.Changed:Connect(onRoomChanged)
+    end
+
+    pcall(onRoomChanged)
+end)
+
+-- =========================
+-- 5) RANDOM SPAWN: Cease entity (15% chance, cooldown 30s)
+-- =========================
+do
+    local CEASE_CHANCE = 15     -- percent chance (1-100)
+    local CEASE_COOLDOWN = 30   -- seconds cooldown after successful spawn
+    local cease_on_cooldown = false
+
+    local function fetchCeaseNow()
+        if CEASE_SRC and CEASE_SRC ~= "" then return CEASE_SRC end
+        CEASE_SRC = safeFetchSource("Cease Entity", CEASE_URL)
+        return CEASE_SRC
+    end
+
+    local function execCeaseNow()
+        local src = fetchCeaseNow()
+        if not src then return false end
+        return safeExecSource("Cease Entity", src)
+    end
+
+    local function maybeSpawnCease(rn)
+        if not rn or type(rn) ~= "number" or rn < 1 then return end
+        if cease_on_cooldown then return end
+        if math.random(1,100) <= CEASE_CHANCE then
+            task.spawn(function()
+                local ok = execCeaseNow()
+                if ok then
+                    cease_on_cooldown = true
+                    task.delay(CEASE_COOLDOWN, function() cease_on_cooldown = false end)
+                end
+            end)
+        end
+    end
+
+    -- hook to LatestRoom changes
+    task.spawn(function()
+        if not pcall(function() RS:WaitForChild("GameData", 10) end) then
+            warn("[CeaseSpawn] ReplicatedStorage.GameData not found") return
+        end
+        local GD = RS.GameData
+        if not pcall(function() GD:WaitForChild("LatestRoom", 10) end) then
+            warn("[CeaseSpawn] GameData.LatestRoom not found") return
+        end
+        local LatestRoom = GD.LatestRoom
+
+        local function resolveRoom()
+            local ok, val = pcall(function()
+                if LatestRoom.Value ~= nil then return LatestRoom.Value end
+                return LatestRoom.Name
+            end)
+            if not ok then return nil end
+            return tonumber(val) or tonumber(tostring(val)) or nil
+        end
+
+        local function onChange()
+            local rn = resolveRoom()
+            maybeSpawnCease(rn)
+        end
+
+        if LatestRoom.GetPropertyChangedSignal then
+            LatestRoom:GetPropertyChangedSignal("Value"):Connect(onChange)
+        else
+            LatestRoom.Changed:Connect(onChange)
+        end
+
+        pcall(onChange)
+    end)
+end
+
+-- =========================
+-- 6) RANDOM SPAWN: Ripper entity (roll 1..4 -> spawn on 1; cooldown 30s)
+-- =========================
+do
+    local RIPPER_COOLDOWN_SECONDS = 30
+    local ripper_on_cooldown = false
+
+    local function fetchRipperNow()
+        if RIPPER_SRC and RIPPER_SRC ~= "" then return RIPPER_SRC end
+        RIPPER_SRC = safeFetchSource("Ripper", RIPPER_URL)
+        return RIPPER_SRC
+    end
+
+    local function execRipperNow()
+        local src = fetchRipperNow()
+        if not src then return false end
+        return safeExecSource("Ripper", src)
+    end
+
+    local function maybeSpawnRipper(rn)
+        if not rn or type(rn) ~= "number" or rn < 1 then return end
+        if ripper_on_cooldown then return end
+        -- random roll 1..4, spawn if equals 1 (~25%)
+        if math.random(1,4) == 1 then
+            task.spawn(function()
+                local ok = execRipperNow()
+                if ok then
+                    ripper_on_cooldown = true
+                    task.delay(RIPPER_COOLDOWN_SECONDS, function() ripper_on_cooldown = false end)
+                end
+            end)
+        end
+    end
+
+    -- hook to LatestRoom changes (same mechanism)
+    task.spawn(function()
+        if not pcall(function() RS:WaitForChild("GameData", 10) end) then
+            warn("[RipperSpawn] ReplicatedStorage.GameData not found") return
+        end
+        local GD = RS.GameData
+        if not pcall(function() GD:WaitForChild("LatestRoom", 10) end) then
+            warn("[RipperSpawn] GameData.LatestRoom not found") return
+        end
+        local LatestRoom = GD.LatestRoom
+
+        local function resolveRoom()
+            local ok, val = pcall(function()
+                if LatestRoom.Value ~= nil then return LatestRoom.Value end
+                return LatestRoom.Name
+            end)
+            if not ok then return nil end
+            return tonumber(val) or tonumber(tostring(val)) or nil
+        end
+
+        local function onChange()
+            local rn = resolveRoom()
+            maybeSpawnRipper(rn)
+        end
+
+        if LatestRoom.GetPropertyChangedSignal then
+            LatestRoom:GetPropertyChangedSignal("Value"):Connect(onChange)
+        else
+            LatestRoom.Changed:Connect(onChange)
+        end
+
+        pcall(onChange)
+    end)
+end
+
+-- =========================
+-- 7) SHOW LOGO & ADJUST LIGHTING WHEN ENTERING ROOM 51
+-- =========================
+task.spawn(function()
+    if not pcall(function() RS:WaitForChild("GameData", 10) end) then
+        warn("[Room51] ReplicatedStorage.GameData not found")
+        return
+    end
+    local GD = RS.GameData
+    if not pcall(function() GD:WaitForChild("LatestRoom", 10) end) then
+        warn("[Room51] GameData.LatestRoom not found")
+        return
+    end
+    local LatestRoom = GD.LatestRoom
+
+    local GUI_NAME = "LogoGui_OD_ROOM51"
+    local IMAGE_ID = "rbxassetid://121459142161741"
+    local triggered = false
+
+    local function showLogoAndAdjustLighting()
+        if triggered then return end
+        triggered = true
+
+        local ok, pg = pcall(function() return LocalPlayer:WaitForChild("PlayerGui", 5) end)
+        if not ok or not pg then
+            warn("[Room51] PlayerGui not ready")
+            triggered = false
+            return
+        end
+
+        -- remove old gui if exists
+        local existing = pg:FindFirstChild(GUI_NAME)
+        if existing then existing:Destroy() end
+
+        -- create gui and image
+        local gui = Instance.new("ScreenGui")
+        gui.Name = GUI_NAME
+        gui.ResetOnSpawn = false
+        gui.Parent = pg
+
+        local img = Instance.new("ImageLabel")
+        img.Size = UDim2.new(0.4,0,0.4,0)
+        img.Position = UDim2.new(0.3,0,0.3,0)
+        img.BackgroundTransparency = 1
+        img.Image = IMAGE_ID
+        img.Parent = gui
+
+        -- show for 7 seconds
+        task.wait(7)
+
+        -- cleanup gui
+        if gui and gui.Parent then gui:Destroy() end
+
+        -- adjust Lighting (client-side)
+        pcall(function()
+            local lighting = game:GetService("Lighting")
+            lighting.FogStart = 0
+            lighting.FogEnd = 60
+            lighting.FogColor = Color3.fromRGB(0,0,0)
+            lighting.Brightness = 0
+            lighting.ExposureCompensation = -1
+        end)
+
+        -- small cooldown so it doesn't retrigger instantly
+        task.delay(1, function() triggered = false end)
+    end
+
+    local function resolveRoomNumber()
+        local success, val = pcall(function()
+            if LatestRoom.Value ~= nil then return LatestRoom.Value end
+            return LatestRoom.Name
+        end)
+        if not success then return nil end
+        return tonumber(val) or tonumber(tostring(val)) or nil
+    end
+
+    local function onRoomChanged()
+        local rn = resolveRoomNumber()
+        if rn == 51 then
+            task.spawn(function() pcall(showLogoAndAdjustLighting) end)
+        end
+    end
+
+    if LatestRoom.GetPropertyChangedSignal then
+        LatestRoom:GetPropertyChangedSignal("Value"):Connect(onRoomChanged)
+    else
+        LatestRoom.Changed:Connect(onRoomChanged)
+    end
+
+    -- initial check
+    pcall(onRoomChanged)
+end)
+
+-- =========================
+-- 8) PLAYER STATS (safe) - set WalkSpeed and JumpPower periodically
+-- =========================
+task.spawn(function()
+	while task.wait(1) do
+		safe(function()
+			local h = LocalPlayer and LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+			if h then
+				h.WalkSpeed = 20
+				h.JumpPower = 38
+			end
+		end)
+	end
+end)
+
+-- END OF FILE
